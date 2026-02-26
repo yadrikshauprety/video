@@ -1,0 +1,9 @@
+uvicorn api:app --reloadfastapi
+uvicorn
+streamlit
+opencv-python
+faiss-cpu
+numpy
+torch
+transformers
+Pillow
