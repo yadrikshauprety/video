@@ -8,6 +8,9 @@ UCF_LABELS = [
     "horse riding",
     "diving",
     "running",
+    "a walking dog",
+    "dog on a field",
+    "people partying",
 ]
 
 # Cache for text embeddings

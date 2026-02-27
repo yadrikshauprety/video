@@ -1,4 +1,5 @@
 from fastapi import FastAPI, UploadFile
+from fastapi.staticfiles import StaticFiles # Added for serving videos
 import shutil
 import os
 
@@ -14,6 +15,8 @@ init_db()
 UPLOAD_DIR = "uploaded_videos"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
+# MOUNT STATIC FILES: This allows the frontend to access videos via /stream/filename
+app.mount("/stream", StaticFiles(directory=UPLOAD_DIR), name="stream")
 
 @app.post("/index-video")
 async def index_video(file: UploadFile):
@@ -42,6 +45,7 @@ async def search(query: str):
     for idx in indices:
         video = get_video_by_index(idx)
         if video:
+            # We only send the path and label back
             results.append(video)
 
     return {"results": results}
