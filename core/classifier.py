@@ -11,6 +11,13 @@ UCF_LABELS = [
     "a walking dog",
     "dog on a field",
     "people partying",
+    "cat on a bed",
+    "a playing cat",
+    "friends",
+    "a handsome man",
+    "beautiful lady",
+    "a child playing",
+    "a person who is walking"
 ]
 
 # Cache for text embeddings
