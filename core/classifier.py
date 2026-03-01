@@ -17,7 +17,8 @@ UCF_LABELS = [
     "a handsome man",
     "beautiful lady",
     "a child playing",
-    "a person who is walking"
+    "a person who is walking",
+    "dancing"
 ]
 
 # Cache for text embeddings

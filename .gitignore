@@ -1,0 +1,26 @@
+# --- Python Environment ---
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+env/
+.env
+
+# --- Project Data (DO NOT UPLOAD) ---
+# These contain your private videos and face crops
+uploaded_videos/
+static/face_thumbnails/
+data/*.db
+data/*.index
+
+# --- AI Models & Heavy Assets ---
+# These are downloaded automatically by the code; no need to store them on GitHub
+models/
+.insightface/
+.cache/
+*.onnx
+*.pth
+
+# --- OS Specific ---
+.DS_Store
+Thumbs.db
