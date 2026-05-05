@@ -15,6 +15,7 @@ data/
 uploaded_videos/
 static/face_thumbnails/
 static/thumbnails/
+static/audio/
 
 # OS and IDE
 .vscode/
