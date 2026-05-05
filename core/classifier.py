@@ -18,7 +18,13 @@ UCF_LABELS = [
     "beautiful lady",
     "a child playing",
     "a person who is walking",
-    "dancing"
+    "dancing",
+    "a person standing still",
+    "a person sitting down",
+    "a person talking to camera",
+    "just a background scene",
+    "indoor room",
+    "office environment"
 ]
 
 # Cache for text embeddings
@@ -43,4 +49,10 @@ def classify_video(video_embedding):
     ]
 
     best_index = np.argmax(similarities)
+    max_score = similarities[best_index]
+    
+    # If the match is too weak, categorize as 'General Activity'
+    if max_score < 0.22:
+        return "General Activity"
+        
     return UCF_LABELS[best_index]
