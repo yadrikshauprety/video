@@ -8,9 +8,10 @@ st.set_page_config(layout="wide", page_title="VisionArchive AI", page_icon="🖼
 # --- THEME MANAGEMENT ---
 with st.sidebar:
     st.markdown('<div class="sidebar-logo">🖼️ VisionArchive</div>', unsafe_allow_html=True)
-    theme_mode = st.selectbox("Appearance", ["Light Mode", "Dark Mode", "OLED Black"], index=0)
+    theme_mode = st.selectbox("Appearance", ["Light Mode", "Dark Mode", "OLED Black"], index=2)
     st.divider()
-    menu = st.radio("Library", ["Photos", "Search", "Bulk Import", "Identities", "Discovery", "Utilities"])
+    menu = st.pills("Library Navigation", ["Photos", "Search", "Bulk Import", "Identities", "Discovery", "Utilities"], default="Photos")
+    if not menu: menu = "Photos"
     st.divider()
     conf_level = st.slider("Match Accuracy", 0.0, 1.0, 0.15, 0.05)
 
