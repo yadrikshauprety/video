@@ -67,7 +67,7 @@ check_jobs_realtime()
 
 # --- MAIN CONTENT ---
 try:
-    TIMEOUT = 15
+    TIMEOUT = 30
     if menu == "Photos":
         st.title("📂 Your Media Library")
         res = requests.get(f"{API_URL}/videos", timeout=TIMEOUT)
@@ -75,12 +75,24 @@ try:
             videos = res.json()["videos"]
             if not videos: st.info("Your library is empty. Go to 'Bulk Import' to index videos.")
             else:
-                cols = st.columns(4)
+                cols = st.columns(3) # Slightly larger cards
                 for i, v in enumerate(videos):
-                    with cols[i % 4]:
+                    with cols[i % 3]:
                         st.markdown('<div class="video-card">', unsafe_allow_html=True)
                         st.video(f"{API_URL}/stream/{os.path.basename(v['path'])}")
-                        st.caption(f"**{v['label']}**")
+                        st.caption(f"**Action:** {v['label']}")
+                        
+                        # Audio Extraction Feature
+                        if st.button("🎵 Extract Audio", key=f"audio_{i}"):
+                            with st.spinner("Extracting sound..."):
+                                a_res = requests.post(f"{API_URL}/extract-audio", params={"video_path": v['path']}, timeout=120)
+                                if a_res.status_code == 200:
+                                    data = a_res.json()
+                                    if "audio_url" in data:
+                                        st.audio(f"{API_URL}{data['audio_url']}")
+                                        st.success("Audio ready!")
+                                    else: st.error(data.get("error", "Error"))
+                                else: st.error("Extraction failed.")
                         st.markdown('</div>', unsafe_allow_html=True)
 
     elif menu == "Search":
@@ -105,6 +117,13 @@ try:
                         with cols[i % 2]:
                             st.video(f"{API_URL}/stream/{os.path.basename(item['path'])}")
                             st.write(f"**Action:** {item['label']} | **Score:** {item['score']:.2f}")
+                            if st.button("🎵 Extract Audio", key=f"search_audio_{i}"):
+                                with st.spinner("Extracting..."):
+                                    a_res = requests.post(f"{API_URL}/extract-audio", params={"video_path": item['path']}, timeout=120)
+                                    if a_res.status_code == 200:
+                                        data = a_res.json()
+                                        if "audio_url" in data: st.audio(f"{API_URL}{data['audio_url']}")
+                                        else: st.error(data.get("error", "No audio"))
 
     elif menu == "Bulk Import":
         st.title("🚀 Smart Bulk Video Indexing")
@@ -200,10 +219,7 @@ try:
                 hours = st.number_input("Delete videos from last X hours", min_value=0.1, value=1.0, step=1.0)
                 v_res = requests.get(f"{API_URL}/videos", timeout=TIMEOUT)
                 if v_res.status_code == 200:
-                    all_vids = v_res.json()["videos"]
-                    to_del_count = 0
-                    # Use UTC for comparison to match database CURRENT_TIMESTAMP
-                    now_utc = datetime.now(timezone.utc).timestamp()
+                    all_vids = v_res.json()["videos"]; to_del_count = 0; now_utc = datetime.now(timezone.utc).timestamp()
                     for vid in all_vids:
                         if vid.get("created_at"):
                             try:
@@ -215,8 +231,7 @@ try:
                         if st.button(f"🗑️ Confirm Deletion ({to_del_count} videos)", type="primary", use_container_width=True):
                             res = requests.delete(f"{API_URL}/videos/delete-by-time", params={"hours": hours}, timeout=300)
                             if res.status_code == 200: st.toast("Recent videos deleted", icon="🗑️"); st.rerun()
-                    else:
-                        st.info(f"No videos found in the last {hours} hours.")
+                    else: st.info(f"No videos found in the last {hours} hours.")
 
 except Exception as e:
     st.error(f"Critical UI Error: {e}")
