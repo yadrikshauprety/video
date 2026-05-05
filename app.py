@@ -1,5 +1,6 @@
 import streamlit as st
 import requests, os, time
+from datetime import datetime, timezone
 
 API_URL = "http://127.0.0.1:8000"
 st.set_page_config(layout="wide", page_title="VisionArchive AI", page_icon="🖼️")
@@ -38,45 +39,38 @@ st.markdown(f"""
 </style>
 """, unsafe_allow_html=True)
 
-# --- REAL-TIME JOB MONITORING (AUTO-REFRESH) ---
+# --- REAL-TIME JOB MONITORING ---
 def check_jobs_realtime():
     try:
-        res = requests.get(f"{API_URL}/job-status", timeout=1)
+        res = requests.get(f"{API_URL}/job-status", timeout=5)
         if res.status_code == 200:
             jobs = res.json()
             is_any_job_active = False
-            for job_type, data in jobs.items():
-                if data["status"] == "processing":
-                    is_any_job_active = True
-                    with st.sidebar:
+            with st.sidebar:
+                for job_type, data in jobs.items():
+                    if data["status"] == "processing":
+                        is_any_job_active = True
                         st.info(f"⏳ {data['message']}")
                         prog = data["current"] / data["total"] if data["total"] > 0 else 0
                         st.progress(prog)
-                        if "eta" in data and data["eta"] > 0:
-                            st.caption(f"ETA: {data['eta']:.0f}s remaining")
-                elif data["status"] == "completed":
-                    if f"toast_{job_type}" not in st.session_state:
-                        st.toast(f"✅ {data['message']}", icon="🎉")
-                        st.session_state[f"toast_{job_type}"] = True
-            
-            # If a job is active, wait 2 seconds and refresh the page to update progress
-            if is_any_job_active:
-                time.sleep(2)
-                st.rerun()
-            else:
-                # Clear toast flags when jobs are idle
-                for job_type in jobs:
-                    if f"toast_{job_type}" in st.session_state and jobs[job_type]["status"] == "idle":
-                        del st.session_state[f"toast_{job_type}"]
+                        if st.button(f"Cancel {job_type.replace('_', ' ').title()}", key=f"cancel_{job_type}"):
+                            requests.post(f"{API_URL}/cancel-job/{job_type}", timeout=5)
+                    elif data["status"] in ["completed", "cancelled", "error"]:
+                        if data["status"] == "completed": st.success(f"✅ {data['message']}")
+                        else: st.warning(f"⚠️ {data['message']}")
+                        if st.button("Clear Status", key=f"clear_{job_type}"):
+                            requests.post(f"{API_URL}/clear-jobs", timeout=5); st.rerun()
+            if is_any_job_active: time.sleep(2); st.rerun()
     except: pass
 
 check_jobs_realtime()
 
 # --- MAIN CONTENT ---
 try:
+    TIMEOUT = 15
     if menu == "Photos":
         st.title("📂 Your Media Library")
-        res = requests.get(f"{API_URL}/videos", timeout=2)
+        res = requests.get(f"{API_URL}/videos", timeout=TIMEOUT)
         if res.status_code == 200:
             videos = res.json()["videos"]
             if not videos: st.info("Your library is empty. Go to 'Bulk Import' to index videos.")
@@ -95,12 +89,12 @@ try:
             uploaded_file = st.file_uploader("Choose video...", type=["mp4"])
             if uploaded_file and st.button("Index Video"):
                 with st.spinner("Analyzing..."):
-                    res = requests.post(f"{API_URL}/index-video", files={"file": uploaded_file}, timeout=60)
+                    res = requests.post(f"{API_URL}/index-video", files={"file": uploaded_file}, timeout=300)
                     if res.status_code == 200: st.toast("Indexed Successfully!", icon="📄"); st.success(f"Indexed!")
         st.divider()
         query = st.text_input("What activity are you looking for?")
         if st.button("Search"):
-            res = requests.post(f"{API_URL}/search", params={"query": query, "threshold": conf_level}, timeout=10)
+            res = requests.post(f"{API_URL}/search", params={"query": query, "threshold": conf_level}, timeout=TIMEOUT)
             if res.status_code == 200:
                 results = res.json()["results"]
                 if not results: st.warning("No matches found.")
@@ -117,13 +111,13 @@ try:
         dir_path = st.text_input("Enter local directory path", key="bulk_path_input")
         if st.button("Start Bulk Indexing"):
             if dir_path:
-                res = requests.post(f"{API_URL}/index-bulk", params={"directory_path": dir_path}, timeout=5)
+                res = requests.post(f"{API_URL}/index-bulk", params={"directory_path": dir_path}, timeout=TIMEOUT)
                 if res.status_code == 200: st.toast("Bulk indexing started", icon="🚀"); st.success("Background process started!")
             else: st.warning("Please enter a path.")
 
     elif menu == "Identities":
         st.title("👤 Person & Identity Directory")
-        res = requests.get(f"{API_URL}/all-persons", timeout=5)
+        res = requests.get(f"{API_URL}/all-persons", timeout=TIMEOUT)
         if res.status_code == 200:
             persons = res.json()["persons"]
             if not persons: st.info("No identities found yet.")
@@ -140,11 +134,11 @@ try:
                 st.subheader("Edit Identity")
                 new_name = st.text_input("Name this person", value=p['name'] if p['name'] else "")
                 if st.button("Save Name"):
-                    requests.post(f"{API_URL}/name-person/{p['id']}", params={"name": new_name}, timeout=5)
+                    requests.post(f"{API_URL}/name-person/{p['id']}", params={"name": new_name}, timeout=TIMEOUT)
                     st.toast("Identity updated!", icon="👤"); st.rerun()
             with col_vids:
                 st.subheader(f"Videos featuring this person")
-                v_res = requests.get(f"{API_URL}/person-videos/{p['id']}", timeout=5)
+                v_res = requests.get(f"{API_URL}/person-videos/{p['id']}", timeout=TIMEOUT)
                 if v_res.status_code == 200:
                     for v in v_res.json()["videos"]:
                         st.video(f"{API_URL}/stream/{os.path.basename(v['path'])}")
@@ -155,15 +149,14 @@ try:
         col1, col2 = st.columns(2)
         with col1:
             if st.button("🚀 Run Global AI Re-clustering", use_container_width=True):
-                requests.post(f"{API_URL}/cluster-faces", timeout=5)
-                st.toast("Clustering started", icon="🧩"); time.sleep(1); st.rerun()
+                requests.post(f"{API_URL}/cluster-faces", timeout=TIMEOUT); st.toast("Clustering started", icon="🧩"); time.sleep(1); st.rerun()
         with col2:
             if st.button("🧹 Remove Duplicate Detections", use_container_width=True):
                 with st.spinner("Cleaning up..."):
-                    res = requests.delete(f"{API_URL}/remove-duplicates", timeout=30)
+                    res = requests.delete(f"{API_URL}/remove-duplicates", timeout=300)
                     if res.status_code == 200: st.toast("Duplicates removed", icon="🧹"); st.rerun()
         st.divider()
-        g_res = requests.get(f"{API_URL}/face-gallery", timeout=10); p_res = requests.get(f"{API_URL}/all-persons", timeout=5)
+        g_res = requests.get(f"{API_URL}/face-gallery", timeout=TIMEOUT); p_res = requests.get(f"{API_URL}/all-persons", timeout=TIMEOUT)
         if g_res.status_code == 200 and p_res.status_code == 200:
             gallery = g_res.json()["gallery"]; persons_list = {str(p['id']): p for p in p_res.json()["persons"]}
             for p_id, faces in gallery.items():
@@ -178,7 +171,7 @@ try:
 
     elif menu == "Utilities":
         st.title("📊 Identity Intelligence Dashboard")
-        s_res = requests.get(f"{API_URL}/face-stats", timeout=5)
+        s_res = requests.get(f"{API_URL}/face-stats", timeout=TIMEOUT)
         if s_res.status_code == 200:
             stats = s_res.json()
             m1, m2, m3 = st.columns(3)
@@ -200,13 +193,30 @@ try:
             with c_r1:
                 if st.button("🔧 Repair Search Index", use_container_width=True):
                     with st.spinner("Repairing..."):
-                        res = requests.post(f"{API_URL}/rebuild-index", timeout=30)
+                        res = requests.post(f"{API_URL}/rebuild-index", timeout=300)
                         if res.status_code == 200: st.toast("Search index repaired", icon="🔧"); st.success("Synced!")
             with c_r2:
+                st.write("**Bulk Cleanup**")
                 hours = st.number_input("Delete videos from last X hours", min_value=0.1, value=1.0, step=1.0)
-                if st.button("🗑️ Delete Recent Videos", type="primary", use_container_width=True):
-                    res = requests.delete(f"{API_URL}/videos/delete-by-time", params={"hours": hours}, timeout=30)
-                    if res.status_code == 200: st.toast("Recent videos deleted", icon="🗑️"); st.rerun()
+                v_res = requests.get(f"{API_URL}/videos", timeout=TIMEOUT)
+                if v_res.status_code == 200:
+                    all_vids = v_res.json()["videos"]
+                    to_del_count = 0
+                    # Use UTC for comparison to match database CURRENT_TIMESTAMP
+                    now_utc = datetime.now(timezone.utc).timestamp()
+                    for vid in all_vids:
+                        if vid.get("created_at"):
+                            try:
+                                v_time = datetime.strptime(vid["created_at"], "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc).timestamp()
+                                if now_utc - v_time < (hours * 3600): to_del_count += 1
+                            except: pass
+                    if to_del_count > 0:
+                        st.warning(f"This will permanently delete **{to_del_count} videos** from the last {hours} hours.")
+                        if st.button(f"🗑️ Confirm Deletion ({to_del_count} videos)", type="primary", use_container_width=True):
+                            res = requests.delete(f"{API_URL}/videos/delete-by-time", params={"hours": hours}, timeout=300)
+                            if res.status_code == 200: st.toast("Recent videos deleted", icon="🗑️"); st.rerun()
+                    else:
+                        st.info(f"No videos found in the last {hours} hours.")
 
 except Exception as e:
     st.error(f"Critical UI Error: {e}")

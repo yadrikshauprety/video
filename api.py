@@ -1,6 +1,6 @@
 from fastapi import FastAPI, UploadFile, Query, BackgroundTasks
 from fastapi.staticfiles import StaticFiles
-import shutil, os, sqlite3, json, time
+import shutil, os, sqlite3, json, time, threading
 import numpy as np
 
 # Importing your core logic modules
@@ -18,6 +18,7 @@ job_progress = {
     "bulk_index": {"status": "idle", "current": 0, "total": 0, "eta": 0, "message": ""},
     "clustering": {"status": "idle", "current": 0, "total": 0, "message": ""}
 }
+stop_flags = {"bulk_index": False, "clustering": False}
 
 # Ensure database tables are created on startup
 init_db()
@@ -32,12 +33,11 @@ app.mount("/stream", StaticFiles(directory=UPLOAD_DIR), name="stream")
 app.mount("/faces", StaticFiles(directory=THUMB_DIR), name="faces")
 
 def process_single_video(file_path):
-    """Internal helper to process a video from path."""
     frames = extract_frames(file_path)
     v_emb = generate_video_embedding(frames)
     label = classify_video(v_emb)
     add_vector(v_emb)
-    video_id = add_video(file_path, label, v_emb) # Storing embedding in DB
+    video_id = add_video(file_path, label, v_emb)
     process_and_link_faces(frames, video_id)
     return label
 
@@ -50,8 +50,9 @@ async def index_video(file: UploadFile):
     return {"message": "Success", "label": label}
 
 def run_bulk_index_task(directory_path: str):
-    global job_progress
+    global job_progress, stop_flags
     try:
+        stop_flags["bulk_index"] = False
         directory_path = os.path.normpath(directory_path.strip().replace('"', '').replace("'", ""))
         extensions = ('.mp4', '.avi', '.mov', '.mkv', '.wmv')
         files = [f for f in os.listdir(directory_path) if f.lower().endswith(extensions)]
@@ -65,6 +66,11 @@ def run_bulk_index_task(directory_path: str):
         conn.close()
 
         for i, filename in enumerate(files):
+            if stop_flags["bulk_index"]:
+                job_progress["bulk_index"]["status"] = "cancelled"
+                job_progress["bulk_index"]["message"] = "Processing cancelled by user."
+                return
+
             try:
                 file_path = os.path.join(directory_path, filename)
                 dest_path = os.path.join(UPLOAD_DIR, filename)
@@ -96,18 +102,22 @@ async def index_bulk(directory_path: str, background_tasks: BackgroundTasks):
     return {"message": "Bulk processing started"}
 
 def run_clustering_task():
-    global job_progress
+    global job_progress, stop_flags
     try:
+        stop_flags["clustering"] = False
         from core.face_processor import clustering_progress
         job_progress["clustering"] = {"status": "processing", "current": 0, "total": 100, "message": "Initializing..."}
         
-        # We need to run cluster_all_faces in a way that we can see its progress
-        # Since it updates its own global clustering_progress, we'll poll it
-        import threading
         t = threading.Thread(target=cluster_all_faces)
         t.start()
         
         while t.is_alive():
+            if stop_flags["clustering"]:
+                # HDBSCAN can't be easily stopped mid-flight, but we'll mark it
+                job_progress["clustering"]["status"] = "cancelled"
+                job_progress["clustering"]["message"] = "Stopping after current step..."
+                return
+
             from core.face_processor import clustering_progress as cp
             job_progress["clustering"].update(cp)
             time.sleep(0.5)
@@ -122,6 +132,20 @@ def run_clustering_task():
 async def start_clustering(background_tasks: BackgroundTasks):
     background_tasks.add_task(run_clustering_task)
     return {"message": "Clustering started"}
+
+@app.post("/cancel-job/{job_type}")
+async def cancel_job(job_type: str):
+    if job_type in stop_flags:
+        stop_flags[job_type] = True
+        return {"message": f"Cancellation requested for {job_type}"}
+    return {"error": "Invalid job type"}
+
+@app.post("/clear-jobs")
+async def clear_jobs():
+    global job_progress
+    for job in job_progress:
+        job_progress[job] = {"status": "idle", "current": 0, "total": 0, "message": ""}
+    return {"message": "All job statuses reset."}
 
 @app.get("/job-status")
 async def get_job_status():
@@ -154,24 +178,16 @@ async def get_all_videos():
 
 @app.delete("/videos/delete-by-time")
 async def delete_videos_by_time(hours: float = Query(...)):
-    """Deletes videos indexed within the last X hours."""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    
-    # 1. Find videos to delete
     cursor.execute("SELECT id, path FROM videos WHERE created_at >= datetime('now', '-' || ? || ' hours')", (hours,))
     to_delete = cursor.fetchall()
-    
     deleted_count = 0
     for v_id, path in to_delete:
-        # Delete from disk (optional, but requested 'remove videos')
         if os.path.exists(path):
             try: os.remove(path)
             except: pass
-            
-        # Delete from DB
         cursor.execute("DELETE FROM videos WHERE id = ?", (v_id,))
-        # Delete associated faces
         cursor.execute("SELECT thumbnail_path FROM faces WHERE video_id = ?", (v_id,))
         face_thumbs = cursor.fetchall()
         for f in face_thumbs:
@@ -181,14 +197,9 @@ async def delete_videos_by_time(hours: float = Query(...)):
                 except: pass
         cursor.execute("DELETE FROM faces WHERE video_id = ?", (v_id,))
         deleted_count += 1
-    
-    conn.commit()
-    conn.close()
-    
-    # Also need to rebuild FAISS after deletion to stay in sync
+    conn.commit(); conn.close()
     await rebuild_index()
-    
-    return {"message": f"Deleted {deleted_count} videos and cleaned up associated data.", "count": deleted_count}
+    return {"message": f"Deleted {deleted_count} videos.", "count": deleted_count}
 
 @app.get("/all-persons")
 async def get_all_persons():
@@ -196,8 +207,7 @@ async def get_all_persons():
     cursor = conn.cursor()
     cursor.execute("""
         SELECT p.id, p.name, p.thumbnail, COUNT(f.id) as face_count 
-        FROM persons p 
-        LEFT JOIN faces f ON p.id = f.person_id 
+        FROM persons p LEFT JOIN faces f ON p.id = f.person_id 
         GROUP BY p.id
     """)
     res = [{"id": r[0], "name": r[1], "thumbnail": r[2], "count": r[3]} for r in cursor.fetchall()]
@@ -206,38 +216,25 @@ async def get_all_persons():
 
 @app.post("/rebuild-index")
 async def rebuild_index():
-    """Wipes the FAISS index and rebuilds it from the database."""
     from core.vector_store import INDEX_PATH, DIM
     import faiss
-    
-    # 1. Clear FAISS index
-    if os.path.exists(INDEX_PATH):
-        os.remove(INDEX_PATH)
-    
+    if os.path.exists(INDEX_PATH): os.remove(INDEX_PATH)
     new_index = faiss.IndexFlatIP(DIM)
-    
-    # 2. Fetch all videos with embeddings
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute("SELECT embedding FROM videos ORDER BY id ASC")
     rows = cursor.fetchall()
-    
     added_count = 0
     for r in rows:
         if r[0]:
             emb = np.array(json.loads(r[0])).astype("float32")
             new_index.add(np.array([emb]))
             added_count += 1
-    
-    # 3. Save new index
     faiss.write_index(new_index, INDEX_PATH)
-    
-    # 4. Update the global index object in vector_store (it will reload on next add)
     import core.vector_store
     core.vector_store.index = new_index
-    
     conn.close()
-    return {"message": "Index rebuilt successfully", "vectors_added": added_count}
+    return {"message": "Index rebuilt", "vectors_added": added_count}
 
 @app.delete("/remove-duplicates")
 async def cleanup_duplicates():
@@ -248,14 +245,11 @@ async def cleanup_duplicates():
 async def get_face_stats():
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    cursor.execute("SELECT COUNT(*) FROM persons")
-    total_people = cursor.fetchone()[0]
-    cursor.execute("SELECT COUNT(*) FROM faces")
-    total_faces = cursor.fetchone()[0]
+    cursor.execute("SELECT COUNT(*) FROM persons"); total_people = cursor.fetchone()[0]
+    cursor.execute("SELECT COUNT(*) FROM faces"); total_faces = cursor.fetchone()[0]
     cursor.execute("SELECT p.id, COUNT(f.id) FROM persons p LEFT JOIN faces f ON p.id = f.person_id GROUP BY p.id")
     distribution = {str(r[0]): r[1] for r in cursor.fetchall()}
-    cursor.execute("SELECT confidence FROM faces")
-    confidences = [r[0] for r in cursor.fetchall()]
+    cursor.execute("SELECT confidence FROM faces"); confidences = [r[0] for r in cursor.fetchall()]
     cursor.execute("SELECT video_id, COUNT(*) FROM faces GROUP BY video_id")
     video_dist = {str(r[0]): r[1] for r in cursor.fetchall()}
     conn.close()
@@ -265,38 +259,24 @@ async def get_face_stats():
 async def get_face_gallery():
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    cursor.execute("""
-        SELECT f.person_id, f.thumbnail_path, f.confidence, v.path as video_path
-        FROM faces f JOIN videos v ON f.video_id = v.id
-        ORDER BY f.person_id
-    """)
-    rows = cursor.fetchall()
-    gallery = {}
+    cursor.execute("SELECT f.person_id, f.thumbnail_path, f.confidence, v.path as video_path FROM faces f JOIN videos v ON f.video_id = v.id ORDER BY f.person_id")
+    rows = cursor.fetchall(); gallery = {}
     for r in rows:
-        p_id = str(r[0])
-        if p_id not in gallery: gallery[p_id] = []
-        gallery[p_id].append({"thumbnail": r[1], "confidence": r[2], "video": os.path.basename(r[3])})
+        p_id = str(r[0]); gallery.setdefault(p_id, []).append({"thumbnail": r[1], "confidence": r[2], "video": os.path.basename(r[3])})
     conn.close()
     return {"gallery": gallery}
 
 @app.post("/name-person/{p_id}")
 async def name_person(p_id: int, name: str = Query(...)):
     conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute("UPDATE persons SET name = ? WHERE id = ?", (name, p_id))
-    conn.commit()
-    conn.close()
+    cursor = conn.cursor(); cursor.execute("UPDATE persons SET name = ? WHERE id = ?", (name, p_id))
+    conn.commit(); conn.close()
     return {"status": "success"}
 
 @app.get("/person-videos/{p_id}")
 async def get_person_videos(p_id: int):
     conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute("""
-        SELECT DISTINCT v.path, v.label 
-        FROM videos v JOIN faces f ON v.id = f.video_id 
-        WHERE f.person_id = ?
-    """, (p_id,))
+    cursor = conn.cursor(); cursor.execute("SELECT DISTINCT v.path, v.label FROM videos v JOIN faces f ON v.id = f.video_id WHERE f.person_id = ?", (p_id,))
     res = [{"path": r[0], "label": r[1]} for r in cursor.fetchall()]
     conn.close()
     return {"videos": res}
