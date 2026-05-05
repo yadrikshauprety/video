@@ -45,10 +45,20 @@ def classify_video(video_embedding):
     
     with torch.no_grad():
         text_features = model.get_text_features(**inputs)
-        text_features = text_features / text_features.norm(p=2, dim=-1, keepdim=True)
+        # Handle different transformer versions where output might be an object
+        if hasattr(text_features, "pooler_output"):
+            text_features = text_features.pooler_output
+        elif not isinstance(text_features, torch.Tensor):
+            # If it's a dictionary-like object (BaseModelOutputWithPooling)
+            text_features = text_features[0] 
+            
+        text_features = text_features / torch.linalg.norm(text_features, dim=-1, keepdim=True)
     
     if isinstance(video_embedding, np.ndarray):
         video_embedding = torch.from_numpy(video_embedding).to(device).float()
+    
+    # Ensure video_embedding is also normalized
+    video_embedding = video_embedding / torch.linalg.norm(video_embedding, dim=-1, keepdim=True)
     
     similarity = (100.0 * video_embedding @ text_features.T).softmax(dim=-1)
     top_idx = similarity.argmax().item()
