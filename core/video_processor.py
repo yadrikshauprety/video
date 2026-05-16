@@ -1,5 +1,6 @@
 import cv2
 import os
+import numpy as np
 from concurrent.futures import ThreadPoolExecutor
 
 def extract_frames(video_path, fast_mode=True):

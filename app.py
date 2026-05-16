@@ -105,8 +105,13 @@ try:
                     res = requests.post(f"{API_URL}/index-video", files={"file": uploaded_file}, timeout=300)
                     if res.status_code == 200: st.toast("Indexed Successfully!", icon="📄"); st.success(f"Indexed!")
         st.divider()
-        query = st.text_input("What activity are you looking for?")
-        if st.button("Search"):
+        col_q, col_s = st.columns([3, 1])
+        with col_q:
+            query = st.text_input("What activity are you looking for?", placeholder="e.g. dog walking, sign language, person biking")
+        with col_s:
+            conf_level = st.slider("Strictness", 0.0, 0.5, 0.23, step=0.01, help="Higher = more accurate results, Lower = more broad results")
+            
+        if st.button("🔍 Search Library", use_container_width=True):
             res = requests.post(f"{API_URL}/search", params={"query": query, "threshold": conf_level}, timeout=TIMEOUT)
             if res.status_code == 200:
                 results = res.json()["results"]

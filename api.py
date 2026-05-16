@@ -1,7 +1,7 @@
 from fastapi import FastAPI, UploadFile, Query, BackgroundTasks
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
-import shutil, os, sqlite3, json, time, threading, traceback
+import shutil, os, sqlite3, json, time, threading, traceback, subprocess
 import numpy as np
 
 from core.video_processor import extract_frames
@@ -160,7 +160,7 @@ async def clear_jobs():
     return {"message": "Cleared"}
 
 @app.post("/search")
-async def search(query: str, threshold: float = 0.15):
+async def search(query: str, threshold: float = 0.23):
     # Base generic prompts
     prompts = [f"a video of {query}", f"a scene showing {query}", query]
     
@@ -176,11 +176,36 @@ async def search(query: str, threshold: float = 0.15):
     embs = [encode_text(p) for p in prompts]
     q_emb = np.mean(embs, axis=0)
     q_emb = q_emb / np.linalg.norm(q_emb)
-    scores, indices = search_vector(q_emb); results = []
+    scores, indices = search_vector(q_emb, top_k=20); results = []
+    
+    # Keyword extraction for smarter filtering
+    query_words = set(query.lower().replace("a ", "").replace("the ", "").split())
+    
     for score, idx in zip(scores, indices):
         if float(score) >= threshold:
             video = get_video_by_index(idx)
-            if video: results.append({"path": video[0], "label": video[1], "score": float(score)})
+            if video:
+                v_path, v_label = video[0], video[1]
+                v_label_lower = v_label.lower()
+                
+                # SENSOR: Check if the AI label contradicts the search
+                # If they search for 'dog' and the label is 'biking', we should be skeptical
+                label_words = set(v_label_lower.replace("playing ", "").replace("with a ", "").split())
+                has_keyword_match = any(word in v_label_lower for word in query_words if len(word) > 2)
+                
+                final_score = float(score)
+                # Boost if the label matches the query keywords
+                if has_keyword_match:
+                    final_score += 0.1
+                else:
+                    # Penalize if the AI thinks it's something totally different (like biking vs dog)
+                    final_score -= 0.1
+                
+                if final_score >= threshold:
+                    results.append({"path": v_path, "label": v_label, "score": final_score})
+    
+    # Sort by the new Hybrid Score
+    results.sort(key=lambda x: x['score'], reverse=True)
     return {"results": results}
 
 @app.get("/videos")
