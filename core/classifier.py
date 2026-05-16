@@ -18,21 +18,39 @@ def get_clip_model():
     return _model, _processor
 
 LABELS = [
-    "person doing sign language",
-    "person gesturing with hands",
-    "person walking",
-    "person running",
-    "person sitting",
-    "person talking",
-    "person standing",
-    "person dancing",
-    "person typing on a laptop",
-    "person cooking in a kitchen",
-    "person exercising or working out",
-    "person driving a car",
-    "reading a book",
-    "eating or drinking",
-    "playing a musical instrument"
+    # UCF101 Action Categories (Natural Language Formatted)
+    "applying eye makeup", "applying lipstick", "archery", "baby crawling", 
+    "balance beam", "band marching", "baseball pitch", "playing basketball", 
+    "basketball dunk", "bench press", "biking", "playing billiards", 
+    "blow drying hair", "blowing candles", "body weight squats", "bowling", 
+    "boxing punching bag", "boxing speed bag", "breast stroke swimming", 
+    "brushing teeth", "clean and jerk weightlifting", "cliff diving", 
+    "cricket bowling", "cricket shot", "cutting in kitchen", "diving", 
+    "drumming", "fencing", "field hockey penalty", "floor gymnastics", 
+    "catching a frisbee", "front crawl swimming", "golf swing", "haircut", 
+    "hammering", "hammer throw", "handstand pushups", "handstand walking", 
+    "head massage", "high jump", "horse racing", "horse riding", "hula hoop", 
+    "ice dancing", "javelin throw", "juggling balls", "jumping jacks", 
+    "jumping rope", "kayaking", "knitting", "long jump", "doing lunges", 
+    "military parade", "mixing batter", "mopping floor", "using nunchucks", 
+    "parallel bars gymnastics", "pizza tossing", "playing cello", "playing daf", 
+    "playing dhol", "playing flute", "playing guitar", "playing piano", 
+    "playing sitar", "playing tabla", "playing violin", "pole vaulting", 
+    "pommel horse gymnastics", "doing pull ups", "punching", "doing push ups", 
+    "rafting", "indoor rock climbing", "rope climbing", "rowing a boat", 
+    "salsa spinning", "shaving beard", "shotput throw", "skateboarding", 
+    "skiing", "riding a jetski", "sky diving", "soccer juggling", 
+    "soccer penalty kick", "still rings gymnastics", "sumo wrestling", 
+    "surfing", "swinging", "table tennis shot", "tai chi", "tennis swing", 
+    "throwing discus", "trampoline jumping", "typing on keyboard", 
+    "uneven bars gymnastics", "volleyball spiking", "walking with a dog", 
+    "wall pushups", "writing on board", "playing with a yoyo",
+
+    # General / Miscellaneous additions
+    "person doing sign language", "person talking", "person standing", 
+    "person sitting", "person taking a photo", "shopping", "laughing", 
+    "crying", "beautiful landscape", "sunset", "ocean waves", "city street", 
+    "abstract video", "screen recording", "news broadcast"
 ]
 
 def classify_video(video_embedding):

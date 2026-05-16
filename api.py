@@ -63,16 +63,21 @@ def run_bulk_index_task(directory_path: str):
             job_progress["bulk_index"] = {"status": "error", "message": f"Not a directory: {directory_path}"}
             return
 
-        files = [f for f in os.listdir(directory_path) if f.lower().endswith(extensions)]
-        print(f"DEBUG: Found {len(files)} files in {directory_path}")
+        files_to_process = []
+        for root, dirs, filenames in os.walk(directory_path):
+            for f in filenames:
+                if f.lower().endswith(extensions):
+                    files_to_process.append(os.path.join(root, f))
+                    
+        print(f"DEBUG: Found {len(files_to_process)} files in {directory_path} and subdirectories")
         
         job_progress["bulk_index"] = {
             "status": "processing", 
             "current": 0, 
-            "total": len(files), 
+            "total": len(files_to_process), 
             "eta": 0, 
             "start_time": time.time(), 
-            "message": f"Indexing {len(files)} videos..."
+            "message": f"Indexing {len(files_to_process)} videos..."
         }
         
         conn = sqlite3.connect(DB_PATH)
@@ -81,21 +86,35 @@ def run_bulk_index_task(directory_path: str):
         indexed_paths = {os.path.normpath(r[0]) for r in cursor.fetchall()}
         conn.close()
 
-        for i, filename in enumerate(files):
+        for i, file_path in enumerate(files_to_process):
             if stop_flags["bulk_index"]:
                 job_progress["bulk_index"]["status"] = "cancelled"
                 job_progress["bulk_index"]["message"] = "Cancelled by user."
                 return
 
-            file_path = os.path.normpath(os.path.join(directory_path, filename))
+            filename = os.path.basename(file_path)
             dest_path = os.path.normpath(os.path.join(UPLOAD_DIR, filename))
             
             if dest_path in indexed_paths or file_path in indexed_paths:
                 print(f"DEBUG: Skipping {filename}, already indexed.")
             else:
                 try:
-                    if not os.path.exists(dest_path):
-                        shutil.copy(file_path, dest_path)
+                    if not filename.lower().endswith(".mp4"):
+                        new_filename = os.path.splitext(filename)[0] + ".mp4"
+                        dest_path = os.path.normpath(os.path.join(UPLOAD_DIR, new_filename))
+                        if not os.path.exists(dest_path):
+                            print(f"DEBUG: Fast converting {filename} to MP4...")
+                            import imageio_ffmpeg
+                            ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
+                            subprocess.run([
+                                ffmpeg_exe, "-y", "-i", file_path, 
+                                "-c:v", "libx264", "-preset", "ultrafast", "-crf", "28", 
+                                "-c:a", "aac", dest_path
+                            ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    else:
+                        if not os.path.exists(dest_path):
+                            shutil.copy(file_path, dest_path)
+                            
                     process_single_video(dest_path)
                 except Exception as e:
                     print(f"DEBUG: Error processing {filename}: {str(e)}")
@@ -104,10 +123,12 @@ def run_bulk_index_task(directory_path: str):
             job_progress["bulk_index"]["current"] = i + 1
             elapsed = time.time() - job_progress["bulk_index"]["start_time"]
             avg_time = elapsed / (i + 1)
-            job_progress["bulk_index"]["eta"] = avg_time * (len(files) - (i + 1))
+            job_progress["bulk_index"]["eta"] = avg_time * (len(files_to_process) - (i + 1))
             
+        total_time = time.time() - job_progress["bulk_index"]["start_time"]
+        mins, secs = divmod(int(total_time), 60)
         job_progress["bulk_index"]["status"] = "completed"
-        job_progress["bulk_index"]["message"] = f"Finished indexing {len(files)} videos."
+        job_progress["bulk_index"]["message"] = f"Finished indexing {len(files_to_process)} videos in {mins}m {secs}s."
     except Exception as e:
         print(f"DEBUG: Bulk task failed: {str(e)}")
         print(traceback.format_exc())
@@ -139,11 +160,21 @@ async def clear_jobs():
 
 @app.post("/search")
 async def search(query: str, threshold: float = 0.15):
-    prompts = [f"a video of {query}", f"a person {query}", f"a scene showing {query}", f"someone {query}", f"a close up of {query}", query]
+    # Base generic prompts
+    prompts = [f"a video of {query}", f"a scene showing {query}", query]
+    
+    # Add human-specific prompts only if it seems like a human activity
+    if any(x in query.lower() for x in ["person", "someone", "people", "man", "woman", "boy", "girl"]):
+        prompts.append(f"a person {query}")
+        prompts.append(f"someone {query}")
+        
     if any(x in query.lower() for x in ["sign", "gesture", "hand"]):
-        prompts.append(f"a person using their hands to {query}"); prompts.append(f"manual communication or {query}")
+        prompts.append(f"a person using their hands to {query}")
+        prompts.append(f"manual communication or {query}")
+        
     embs = [encode_text(p) for p in prompts]
-    q_emb = np.mean(embs, axis=0); q_emb = q_emb / np.linalg.norm(q_emb)
+    q_emb = np.mean(embs, axis=0)
+    q_emb = q_emb / np.linalg.norm(q_emb)
     scores, indices = search_vector(q_emb); results = []
     for score, idx in zip(scores, indices):
         if float(score) >= threshold:
@@ -190,6 +221,89 @@ async def rebuild_index():
 @app.delete("/remove-duplicates")
 async def cleanup_duplicates(): return {"removed_count": remove_duplicate_faces()}
 
+# --- DELETE VIDEOS BY TIME ---
+@app.delete("/videos/delete-by-time")
+async def delete_videos_by_time(hours: float = Query(...)):
+    """Delete videos uploaded within the last <hours> hours.
+    Also removes associated faces and video files from disk.
+    Returns the number of videos deleted.
+    """
+    from datetime import datetime, timedelta
+    import os, sqlite3
+    # Use UTC time to match SQLite's default CURRENT_TIMESTAMP
+    cutoff = datetime.utcnow() - timedelta(hours=hours)
+    cutoff_str = cutoff.strftime("%Y-%m-%d %H:%M:%S")
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    # Select videos newer than cutoff (stored as TEXT timestamps)
+    print(f"DEBUG: Deleting videos newer than {cutoff_str}")
+    cursor.execute(
+        "SELECT id, path FROM videos WHERE datetime(created_at) >= ?",
+        (cutoff_str,)
+    )
+    rows = cursor.fetchall()
+    print(f"DEBUG: Found {len(rows)} videos to delete")
+    deleted = 0
+    for vid_id, path in rows:
+        # Remove video file if it exists
+        try:
+            if os.path.exists(path):
+                os.remove(path)
+        except Exception:
+            pass
+        # Remove related faces
+        cursor.execute("DELETE FROM faces WHERE video_id=?", (vid_id,))
+        # Remove video record
+        cursor.execute("DELETE FROM videos WHERE id=?", (vid_id,))
+        deleted += 1
+    conn.commit()
+    conn.close()
+    return {"deleted": deleted}
+
+@app.delete("/videos/delete-all")
+async def delete_all_videos():
+    """Delete all videos, faces, and files from the system."""
+    import os, sqlite3
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, path FROM videos")
+    rows = cursor.fetchall()
+    deleted = 0
+    for vid_id, path in rows:
+        try:
+            if os.path.exists(path):
+                os.remove(path)
+        except Exception:
+            pass
+        deleted += 1
+        
+    cursor.execute("DELETE FROM faces")
+    cursor.execute("DELETE FROM videos")
+    cursor.execute("DELETE FROM persons")
+    # Reset ID counters so new imports start at ID 1
+    cursor.execute("DELETE FROM sqlite_sequence WHERE name IN ('videos', 'persons', 'faces')")
+    
+    # Also clear out the physical thumbnail and audio files
+    for d in [THUMB_DIR, AUDIO_DIR]:
+        if os.path.exists(d):
+            for f in os.listdir(d):
+                try:
+                    os.remove(os.path.join(d, f))
+                except Exception:
+                    pass
+    
+    # Also delete the vector index file so it's fresh
+    from core.vector_store import INDEX_PATH
+    if os.path.exists(INDEX_PATH):
+        try:
+            os.remove(INDEX_PATH)
+        except Exception:
+            pass
+            
+    conn.commit()
+    conn.close()
+    return {"deleted": deleted}
+
 @app.get("/face-stats")
 async def get_face_stats():
     conn = sqlite3.connect(DB_PATH); cursor = conn.cursor()
@@ -222,3 +336,47 @@ async def get_person_videos(p_id: int):
     cursor.execute("SELECT DISTINCT v.path, v.label FROM videos v JOIN faces f ON v.id = f.video_id WHERE f.person_id = ?", (p_id,))
     res = [{"path": r[0], "label": r[1]} for r in cursor.fetchall()]
     conn.close(); return {"videos": res}
+
+@app.delete("/remove-blurred-faces")
+async def remove_blurred_faces():
+    import cv2, os, sqlite3
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, thumbnail_path, confidence FROM faces")
+    rows = cursor.fetchall()
+    deleted = 0
+    for f_id, f_path, conf in rows:
+        # If the model was not confident it's a real face, delete it
+        if conf is not None and conf < 0.85:
+            cursor.execute("DELETE FROM faces WHERE id=?", (f_id,))
+            full_path = os.path.join(THUMB_DIR, f_path)
+            try:
+                if os.path.exists(full_path): os.remove(full_path)
+            except: pass
+            deleted += 1
+            continue
+
+        full_path = os.path.join(THUMB_DIR, f_path)
+        if os.path.exists(full_path):
+            img = cv2.imread(full_path)
+            if img is not None:
+                gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+                variance = cv2.Laplacian(gray, cv2.CV_64F).var()
+                # Increased threshold to 300 to aggressively catch blur
+                if variance < 300:
+                    cursor.execute("DELETE FROM faces WHERE id=?", (f_id,))
+                    try:
+                        os.remove(full_path)
+                    except:
+                        pass
+                    deleted += 1
+        else:
+            cursor.execute("DELETE FROM faces WHERE id=?", (f_id,))
+            deleted += 1
+            
+    # Cleanup: Delete any identities (persons) that have no faces left
+    cursor.execute("DELETE FROM persons WHERE id NOT IN (SELECT DISTINCT person_id FROM faces WHERE person_id IS NOT NULL)")
+            
+    conn.commit()
+    conn.close()
+    return {"removed": deleted}

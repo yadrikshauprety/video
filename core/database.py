@@ -41,11 +41,13 @@ def add_video(path, label, embedding=None):
 
 # --- THE MISSING FUNCTION ---
 def get_video_by_index(index_id):
-    """Retrieves video details based on the vector index (FAISS index)."""
+    """Retrieves video details based on the vector index (FAISS index).
+    Uses OFFSET to match the sequential nature of the FAISS index.
+    """
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    # Note: SQLite IDs usually start at 1, FAISS indices start at 0
-    cursor.execute("SELECT path, label FROM videos WHERE id=?", (int(index_id) + 1,))
+    # OFFSET matches the 0-indexed FAISS position perfectly
+    cursor.execute("SELECT path, label FROM videos ORDER BY id ASC LIMIT 1 OFFSET ?", (int(index_id),))
     result = cursor.fetchone()
     conn.close()
     return result

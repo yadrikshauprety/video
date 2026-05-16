@@ -137,6 +137,17 @@ try:
 
     elif menu == "Identities":
         st.title("👤 Person & Identity Directory")
+        
+        col1, col2 = st.columns([3, 1])
+        with col2:
+            if st.button("👓 Remove Blurry Faces", help="Deletes low quality / blurry face detections from the database"):
+                with st.spinner("Scanning for blurry faces..."):
+                    res = requests.delete(f"{API_URL}/remove-blurred-faces", timeout=300)
+                    if res.status_code == 200: 
+                        st.toast(f"Removed {res.json().get('removed', 0)} blurry faces!", icon="👓")
+                        time.sleep(1)
+                        st.rerun()
+                        
         res = requests.get(f"{API_URL}/all-persons", timeout=TIMEOUT)
         if res.status_code == 200:
             persons = res.json()["persons"]
@@ -233,6 +244,14 @@ try:
                             res = requests.delete(f"{API_URL}/videos/delete-by-time", params={"hours": hours}, timeout=300)
                             if res.status_code == 200: st.toast("Recent videos deleted", icon="🗑️"); st.rerun()
                     else: st.info(f"No videos found in the last {hours} hours.")
+                    
+                st.markdown("---")
+                st.write("**Danger Zone**")
+                if st.button("🚨 Delete ALL Videos in Database", type="primary", use_container_width=True):
+                    res = requests.delete(f"{API_URL}/videos/delete-all", timeout=300)
+                    if res.status_code == 200:
+                        st.toast("Entire database wiped", icon="🚨")
+                        st.rerun()
 
 except Exception as e:
     st.error(f"Critical UI Error: {e}")
