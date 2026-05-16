@@ -121,6 +121,7 @@ def run_bulk_index_task(directory_path: str):
                     print(traceback.format_exc())
                 
             job_progress["bulk_index"]["current"] = i + 1
+            job_progress["bulk_index"]["message"] = f"Indexing: {filename} ({i+1}/{len(files_to_process)})"
             elapsed = time.time() - job_progress["bulk_index"]["start_time"]
             avg_time = elapsed / (i + 1)
             job_progress["bulk_index"]["eta"] = avg_time * (len(files_to_process) - (i + 1))

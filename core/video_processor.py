@@ -12,19 +12,22 @@ def extract_frames(video_path, fast_mode=True):
     frames = []
     
     if fast_mode:
-        # Fast sampling: 1 frame every 2 seconds
-        fps = cap.get(cv2.CAP_PROP_FPS)
+        # Optimized for speed: Fixed count of 4 frames per video
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        interval = int(fps * 2) if fps > 0 else 60
+        if total_frames <= 0: total_frames = 60
         
-        for i in range(0, total_frames, interval):
+        # Target exactly 4 frames to keep CPU load low
+        num_frames = 4
+        indices = np.linspace(0, total_frames - 1, num_frames).astype(int)
+        
+        for i in indices:
             cap.set(cv2.CAP_PROP_POS_FRAMES, i)
             ret, frame = cap.read()
             if ret:
-                # Downscale for faster processing downstream
+                # Downscale for faster processing
                 h, w = frame.shape[:2]
-                if w > 1280:
-                    frame = cv2.resize(frame, (1280, int(h * 1280 / w)))
+                new_w = 640
+                frame = cv2.resize(frame, (new_w, int(h * new_w / w)))
                 frames.append(frame)
     else:
         # Scene detection fallback (slow)

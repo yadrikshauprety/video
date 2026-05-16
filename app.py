@@ -128,6 +128,24 @@ try:
 
     elif menu == "Bulk Import":
         st.title("🚀 Smart Bulk Video Indexing")
+        
+        # Real-time progress display in main area
+        jobs = requests.get(f"{API_URL}/job-status").json()
+        bulk_job = jobs.get("bulk_index", {})
+        
+        if bulk_job.get("status") == "processing":
+            st.info(f"⏳ {bulk_job.get('message', 'Processing...')}")
+            prog = bulk_job["current"] / bulk_job["total"] if bulk_job["total"] > 0 else 0
+            st.progress(prog, text=f"Progress: {bulk_job['current']}/{bulk_job['total']}")
+            st.button("Stop Indexing", on_click=lambda: requests.post(f"{API_URL}/cancel-job/bulk_index"))
+            st.divider()
+        elif bulk_job.get("status") == "completed":
+            st.success(f"✅ {bulk_job.get('message')}")
+            if st.button("Clear Finished Status"):
+                requests.post(f"{API_URL}/clear-jobs")
+                st.rerun()
+            st.divider()
+
         dir_path = st.text_input("Enter local directory path", key="bulk_path_input")
         if st.button("Start Bulk Indexing"):
             if dir_path:

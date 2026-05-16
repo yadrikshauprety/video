@@ -47,44 +47,46 @@ def get_known_people():
     return [(row[0], np.array(json.loads(row[1]))) for row in data]
 
 def process_and_link_faces(frames, video_id):
+    if not frames: return
     face_app = get_face_app()
     known_people = get_known_people()
-    print(f"DEBUG: Detecting faces in {len(frames)} frames...")
     
-    for i, frame in enumerate(frames):
-        if i % 5 == 0: print(f"DEBUG: Processing frame {i}/{len(frames)}")
-        try:
-            faces = face_app.get(frame)
-            for face in faces:
-                new_emb = face.normed_embedding
-                matched_person_id = None
-                for p_id, p_emb in known_people:
-                    score = cosine(new_emb, p_emb)
-                    if score < 0.45:
-                        matched_person_id = p_id
-                        break
-                
-                bbox = face.bbox.astype(int)
-                y1, y2, x1, x2 = max(0, bbox[1]), bbox[3], max(0, bbox[0]), bbox[2]
-                face_img = frame[y1:y2, x1:x2]
-                thumb_name = f"{uuid.uuid4()}.jpg"
-                if face_img.size > 0:
-                    cv2.imwrite(os.path.join(FACES_DIR, thumb_name), face_img)
-                
-                if matched_person_id is None:
-                    conn = sqlite3.connect(DB_PATH)
-                    cur = conn.cursor()
-                    cur.execute("INSERT INTO persons (name, thumbnail) VALUES (?, ?)", (None, thumb_name))
-                    matched_person_id = cur.lastrowid
-                    conn.commit()
-                    conn.close()
-                    known_people.append((matched_person_id, new_emb))
-                
-                from core.database import link_face_to_person
-                confidence = float(face.det_score) if hasattr(face, 'det_score') else 0.0
-                link_face_to_person(video_id, matched_person_id, new_emb.tolist(), thumb_name, confidence)
-        except Exception as e:
-            print(f"DEBUG: Error in face detection for frame {i}: {e}")
+    # Critical optimization: Only scan 1 frame (middle) for faces during bulk
+    frame = frames[len(frames)//2]
+    print(f"DEBUG: Detecting faces in 1 representative frame...")
+    
+    try:
+        faces = face_app.get(frame)
+        for face in faces:
+            new_emb = face.normed_embedding
+            matched_person_id = None
+            for p_id, p_emb in known_people:
+                score = cosine(new_emb, p_emb)
+                if score < 0.45:
+                    matched_person_id = p_id
+                    break
+            
+            bbox = face.bbox.astype(int)
+            y1, y2, x1, x2 = max(0, bbox[1]), bbox[3], max(0, bbox[0]), bbox[2]
+            face_img = frame[y1:y2, x1:x2]
+            thumb_name = f"{uuid.uuid4()}.jpg"
+            if face_img.size > 0:
+                cv2.imwrite(os.path.join(FACES_DIR, thumb_name), face_img)
+            
+            if matched_person_id is None:
+                conn = sqlite3.connect(DB_PATH)
+                cur = conn.cursor()
+                cur.execute("INSERT INTO persons (name, thumbnail) VALUES (?, ?)", (None, thumb_name))
+                matched_person_id = cur.lastrowid
+                conn.commit()
+                conn.close()
+                known_people.append((matched_person_id, new_emb))
+            
+            from core.database import link_face_to_person
+            confidence = float(face.det_score) if hasattr(face, 'det_score') else 0.0
+            link_face_to_person(video_id, matched_person_id, new_emb.tolist(), thumb_name, confidence)
+    except Exception as e:
+        print(f"DEBUG: Error in face detection: {e}")
 
 def cluster_all_faces():
     global clustering_progress
